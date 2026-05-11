@@ -137,12 +137,27 @@ AI：在开始实现之前，我需要了解几个关键问题：
 
 ## 快速开始
 
-### 方式一：npm 安装（推荐）
+### 📌 先选对路径：marketplace vs npx
+
+> **以下 4 款工具有官方 plugin marketplace——走 marketplace 才是 high-fidelity**（正式注册为 plugin、`/skills` 命令可见、hooks 走标准 `${CLAUDE_PLUGIN_ROOT}` 路径）。`npx superpowers-zh` 对它们是 low-fidelity 路径——v1.4.0 起已补齐 hooks 注册和 `.claude/settings.json` 写入，能让 SessionStart hook 自动触发 `using-superpowers` 注入，但仍是"项目级 loose plugin"。
+
+| 工具 | High-fidelity 路径（**推荐**） | npx low-fidelity 路径 |
+|---|---|---|
+| **Claude Code** | `/plugin marketplace add jnMetaCode/superpowers-zh`<br>`/plugin install superpowers-zh@superpowers-zh` | `npx superpowers-zh`（v1.4.0+ 已补 hooks） |
+| **Codex CLI** | 在 CLI 里输入 `/plugins`，搜 `superpowers` | `npx superpowers-zh --tool codex` |
+| **OpenCode** | 见 [上游 OpenCode 安装](https://github.com/obra/superpowers#opencode) | `npx superpowers-zh --tool opencode` |
+| **VS Code (Copilot)** | 见 [docs/README.vscode.md](docs/README.vscode.md) | `npx superpowers-zh`（仅复制 skills） |
+
+**其余 13 款工具**（Cursor / Trae / Kiro / Gemini CLI / Hermes Agent / Aider / Antigravity / Windsurf / Qwen Code / Claw Code / OpenClaw / DeerFlow / Hermes）—— 它们本来就只看本地配置文件（rules / steering / instructions），**`npx superpowers-zh` 是它们的 canonical 安装路径**，没有"更高保真"可言。
+
+### 方式一：npm 安装（多工具自适应）
 
 ```bash
 cd /your/project
 npx superpowers-zh
 ```
+
+自动检测当前项目使用的工具，把 20 个 skills 装到对应位置 + 写工具专属的 bootstrap 文件。**Claude Code v1.4.0+ 还会同时复制 hooks/ 并注册 `.claude/settings.json`** 让 SessionStart hook 自动注入 `using-superpowers`。
 
 > ⚠️ **不要在主目录（`~`）下跑**。v1.2.1 起会拒绝并提示，老版本会把 skills 和 `CLAUDE.md` 等 bootstrap 文件写到你的 home 目录，污染所有项目。如已误装见下文「卸载 / 误装清理」。
 

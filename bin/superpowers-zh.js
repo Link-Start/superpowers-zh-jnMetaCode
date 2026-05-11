@@ -39,6 +39,7 @@ function copyDirSync(src, dest) {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG = JSON.parse(readFileSync(resolve(__dirname, '..', 'package.json'), 'utf8'));
 const SKILLS_SRC = resolve(__dirname, '..', 'skills');
+const HOOKS_SRC = resolve(__dirname, '..', 'hooks');
 const PROJECT_DIR = process.cwd();
 
 // 历史遗留 agent 文件名 — 用于 --uninstall 清理已装用户机器上的残留。
@@ -314,7 +315,126 @@ ${skillList}
   }
 }
 
+// Claude Code 专用：把 hooks/ 复制到 .claude/hooks/，并把 SessionStart hook
+// 注册到 .claude/settings.json（用绝对路径替代 ${CLAUDE_PLUGIN_ROOT}）。
+// 没有这一步，CLAUDE.md 是被动文本——模型可能忽略——而 hook 注入是 superpowers
+// 自动触发链路的核心。详见 README "Claude Code 用户必读" 段。
+function installClaudeCodeHooks(projectDir) {
+  if (!existsSync(HOOKS_SRC)) {
+    console.warn(`  ⚠️  Claude Code: 源目录 hooks/ 不存在，跳过 hook 注册`);
+    return false;
+  }
+
+  const hooksDest = resolve(projectDir, '.claude', 'hooks');
+  copyDirSync(HOOKS_SRC, hooksDest);
+  console.log(`  ✅ Claude Code: hooks -> ${hooksDest}`);
+
+  // 写/合并 .claude/settings.json
+  const settingsPath = resolve(projectDir, '.claude', 'settings.json');
+  let settings = {};
+  if (existsSync(settingsPath)) {
+    try {
+      settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    } catch (e) {
+      console.warn(`  ⚠️  .claude/settings.json 解析失败，跳过 hook 注册: ${e.message}`);
+      return false;
+    }
+  }
+
+  if (!settings.hooks) settings.hooks = {};
+  if (!Array.isArray(settings.hooks.SessionStart)) settings.hooks.SessionStart = [];
+
+  const cmdPath = resolve(hooksDest, 'run-hook.cmd');
+  const ourCommand = `"${cmdPath}" session-start`;
+
+  // 幂等：若已存在指向我们 hooksDest 的 entry，不重复注册
+  const alreadyExists = settings.hooks.SessionStart.some(entry =>
+    Array.isArray(entry.hooks) && entry.hooks.some(h =>
+      h && typeof h.command === 'string' && h.command.includes(hooksDest)
+    )
+  );
+
+  if (!alreadyExists) {
+    settings.hooks.SessionStart.push({
+      matcher: 'startup|clear|compact',
+      hooks: [
+        { type: 'command', command: ourCommand, async: false }
+      ]
+    });
+  }
+
+  mkdirSync(resolve(projectDir, '.claude'), { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+  console.log(`  ✅ Claude Code: SessionStart hook 注册 -> ${settingsPath}`);
+  return true;
+}
+
+function uninstallClaudeCodeHooks(projectDir) {
+  const hooksDest = resolve(projectDir, '.claude', 'hooks');
+  const settingsPath = resolve(projectDir, '.claude', 'settings.json');
+  let removed = 0;
+
+  // 1. 从 settings.json 摘掉指向 hooksDest 的 entry
+  if (existsSync(settingsPath)) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      if (settings.hooks && Array.isArray(settings.hooks.SessionStart)) {
+        const before = settings.hooks.SessionStart.length;
+        settings.hooks.SessionStart = settings.hooks.SessionStart.filter(entry => {
+          if (!Array.isArray(entry.hooks)) return true;
+          return !entry.hooks.some(h =>
+            h && typeof h.command === 'string' && h.command.includes(hooksDest)
+          );
+        });
+        const dropped = before - settings.hooks.SessionStart.length;
+        if (dropped > 0) {
+          if (settings.hooks.SessionStart.length === 0) delete settings.hooks.SessionStart;
+          if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
+          if (Object.keys(settings).length === 0) {
+            rmSync(settingsPath);
+            console.log(`  ✅ Claude Code: 删除空 settings.json -> ${settingsPath}`);
+          } else {
+            writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+            console.log(`  ✅ Claude Code: 从 settings.json 摘掉 ${dropped} 个 hook entry`);
+          }
+          removed += dropped;
+        }
+      }
+    } catch (e) {
+      console.warn(`  ⚠️  .claude/settings.json 解析失败，跳过 hook 清理: ${e.message}`);
+    }
+  }
+
+  // 2. 删 .claude/hooks/ 下我们装过的文件，目录空了就连目录一起删
+  if (existsSync(hooksDest) && existsSync(HOOKS_SRC)) {
+    const ourFiles = readdirSync(HOOKS_SRC, { withFileTypes: true })
+      .filter(e => e.isFile())
+      .map(e => e.name);
+    let fileRemoved = 0;
+    for (const f of ourFiles) {
+      const fp = resolve(hooksDest, f);
+      if (existsSync(fp)) {
+        try { rmSync(fp); fileRemoved++; } catch {}
+      }
+    }
+    if (fileRemoved > 0) {
+      console.log(`  ✅ Claude Code: 移除 ${fileRemoved} 个 hook 脚本 -> ${hooksDest}`);
+      removed += fileRemoved;
+    }
+    try {
+      const left = readdirSync(hooksDest).filter(n => n !== '.DS_Store');
+      if (left.length === 0) rmSync(hooksDest, { recursive: true, force: true });
+    } catch {}
+  }
+
+  return removed;
+}
+
 function generateClaudeCodeBootstrap(projectDir) {
+  // 关键修复 (v1.4.0)：先装 hooks——CLAUDE.md 文本是被动的，只有 SessionStart hook
+  // 才能保证每次会话注入 using-superpowers，让 skill 真正能被自动触发。
+  installClaudeCodeHooks(projectDir);
+
   const skillEntries = scanSkillEntries(SKILLS_SRC);
   const skillList = skillEntries.map(s => `- **${s.name}**: ${s.desc}`).join('\n');
 
@@ -458,6 +578,33 @@ function installForTarget(target) {
   }
 }
 
+// 对走 npx 路径装 Claude Code/Codex CLI/OpenCode/VS Code 的用户提示官方 plugin
+// marketplace 才是 high-fidelity 路径。npx 装这些工具是 low-fidelity（v1.4.0 起
+// Claude Code 已补 hooks 注册，但 /skills 命令仍可能识别不到，因为没走 plugin 注册）。
+const LOW_FIDELITY_TARGETS = ['Claude Code', 'Codex CLI', 'OpenCode', 'VS Code'];
+
+function printMarketplaceHintIfNeeded(installedTargets) {
+  const lowFidelity = installedTargets.filter(t => LOW_FIDELITY_TARGETS.includes(t));
+  if (lowFidelity.length === 0) return;
+
+  console.log(`  📌 提示：以下工具有官方 plugin marketplace，走那条路径体验更完整：\n`);
+  if (lowFidelity.includes('Claude Code')) {
+    console.log(`     Claude Code:`);
+    console.log(`       /plugin marketplace add jnMetaCode/superpowers-zh`);
+    console.log(`       /plugin install superpowers-zh@superpowers-zh`);
+  }
+  if (lowFidelity.includes('Codex CLI')) {
+    console.log(`     Codex CLI: 在 CLI 内输入 /plugins，搜索 superpowers`);
+  }
+  if (lowFidelity.includes('OpenCode')) {
+    console.log(`     OpenCode: 见上游官方安装说明 https://github.com/obra/superpowers#opencode`);
+  }
+  if (lowFidelity.includes('VS Code')) {
+    console.log(`     VS Code (Copilot): 见 docs/README.vscode.md`);
+  }
+  console.log(`\n     npx 安装是 low-fidelity 路径，胜在跨工具一致；上面这些工具的 plugin marketplace 路径才是 high-fidelity。\n`);
+}
+
 function isHomeDir(p) {
   const home = homedir();
   if (!home) return false;
@@ -596,6 +743,9 @@ function uninstall() {
     }
   }
 
+  // v1.4.0+ 装的 Claude Code SessionStart hook 与 .claude/hooks/ 脚本
+  uninstallClaudeCodeHooks(PROJECT_DIR);
+
   // 清理 .claude/agents 下旧版本装过的 legacy agent（v1.2.x 及之前会装 code-reviewer.md，
   // v1.3.0 起跟随上游 v5.1.0 移除）。即使 agents/ 源目录已删，已装用户跑 --uninstall 仍应能清干净。
   const agentsDest = resolve(PROJECT_DIR, '.claude', 'agents');
@@ -680,11 +830,13 @@ function install(forceToolName, force) {
     }
     installForTarget(target);
     console.log('\n  安装完成！重启你的 AI 编程工具即可生效。\n');
+    printMarketplaceHintIfNeeded([target.name]);
     return;
   }
 
   // 自动检测
   let installed = 0;
+  const installedTargets = [];
 
   for (const target of TARGETS) {
     const detects = Array.isArray(target.detect) ? target.detect : [target.detect];
@@ -692,6 +844,7 @@ function install(forceToolName, force) {
     if (found) {
       installForTarget(target);
       installed++;
+      installedTargets.push(target.name);
     }
   }
 
@@ -708,9 +861,11 @@ function install(forceToolName, force) {
     console.log(`  ✅ 默认安装: ${countDirs(dest)} 个 skills -> ${dest}`);
 
     generateClaudeCodeBootstrap(PROJECT_DIR);
+    installedTargets.push('Claude Code');
   }
 
   console.log('\n  安装完成！重启你的 AI 编程工具即可生效。\n');
+  printMarketplaceHintIfNeeded(installedTargets);
  } catch (err) {
     console.error(`  ❌ 安装失败：${err.message}`);
     process.exit(1);

@@ -6,6 +6,46 @@
 
 ---
 
+## v1.4.0 (2026-05-12)
+
+### 🔴 关键修复：Claude Code npx 安装现在会装 hooks + 注册 SessionStart
+
+**背景：** v1.3.0 及之前，`npx superpowers-zh` 装 Claude Code 目标**只**复制 `skills/` 到 `.claude/skills/` 并改 `CLAUDE.md`，**完全没装 hooks**。结果：
+
+- `hooks/hooks.json` 用的 `${CLAUDE_PLUGIN_ROOT}` 只有走 Claude Code plugin marketplace 时才会注入，npx 路径下根本不会展开
+- 没有 SessionStart hook → 不会把 `using-superpowers` 元 skill 注入到对话开头
+- 仅靠 `CLAUDE.md` 文本（被动）告诉模型 "有 skills"，模型可能完全忽略
+
+**用户体感：** skills 静静躺在 `.claude/skills/` 但 AI 从不主动调用，连 `using-superpowers` 指令也不进流程。
+
+**修复（`bin/superpowers-zh.js`）：**
+
+- 新增 `installClaudeCodeHooks(projectDir)` —— 复制 `hooks/` 到 `.claude/hooks/`，并把 SessionStart hook 注册到 `.claude/settings.json`，**用绝对路径**替代 `${CLAUDE_PLUGIN_ROOT}`
+- 幂等：重复跑 `npx superpowers-zh` 不会重复注册（按 hooks 目录路径去重）
+- `--uninstall` 跟随：新增 `uninstallClaudeCodeHooks(projectDir)`，精确摘掉 settings.json 里的 entry + 删除 `.claude/hooks/` 下我们装过的脚本
+
+**新增 marketplace 提示：** 安装时若识别到 Claude Code / Codex CLI / OpenCode / VS Code 这 4 款"有官方 plugin marketplace 的工具"，自动打印 marketplace 命令作为 high-fidelity 推荐路径（npx 仍可用但是 low-fidelity）。
+
+### 📚 README 透明度章节
+
+加 "📌 先选对路径：marketplace vs npx" 表格，**诚实标注 17 款工具里有 4 款的 npx 路径是 low-fidelity**：
+
+- Claude Code / Codex CLI / OpenCode / VS Code → marketplace 是 high-fidelity，npx 是 fallback
+- 其余 13 款（Cursor / Trae / Kiro / Gemini CLI / Hermes Agent / Aider / Antigravity / Windsurf / Qwen Code / Claw Code / OpenClaw / DeerFlow） → npx 是 canonical（它们本来就只看本地配置文件）
+
+### 影响范围
+
+- ✅ 修复用户社区高频反馈："npx 装完 skill 不会自动触发"、"using-superpowers 指令不走流程"
+- ✅ 不影响上游 marketplace 安装路径（仍按上游正常工作）
+- ✅ 向后兼容：v1.3.0 已装的用户重新跑 `npx superpowers-zh` 即可补齐 hooks，无需手动清理
+
+### Refs
+
+- 用户反馈 issue: TBD（社区微信群报告）
+- 相关 issue: #19 tracking 上游同步（worktree 部分见 PR #28）
+
+---
+
 ## v1.3.0 (2026-05-10)
 
 ### 跟上游对齐 (v5.1.0)
